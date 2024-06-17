@@ -13,8 +13,6 @@ The objective is to reliably extract data from images using FiJi measure tool or
 > [!NOTE]
 > We will jump immediately to macro recording and measurement!
 
-> [!WARNING]
-> 50% done!
 
 ## Single-cell measurement
 Measure signal intensity in the nucleus and the cytoplasm of a cell.
@@ -72,7 +70,7 @@ selectWindow("C4-"+name);
 roiManager("Deselect"); //security
 roiManager("multi-measure");
 selectWindow("Results");
-saveAs("Results", "//fileservices.ad.jyu.fi/homes/sleclerc/Desktop/Project/ImageJ Macro Workshop lvl2/Single cell Img/"+name+"_YFP.csv");
+saveAs("Results", name+"_YFP.csv");
 ```
 
 The same steps can be repeated with the cytoplasm segmentation and the yellow channel (C2). In this case, we may also want to remove the nucleus from the cytoplasm. It is easily done by subtracting the segmentation of the nucleus from the segmentation of the cytoplasm using Process->Image Calculator.
@@ -89,9 +87,116 @@ We can of course discuss the facts to analyze 3D images. Most of the time, using
 ## Multi-cell measurement
 It is a similar exercise to the previous one, analyzing multiple cells in a vast field on one Z plane instead. The goal is to detect nuclei (C3) and find if they are infected (C2). We then want to extract the image of the infected nuclei (only C3) to generate a database, as well as save the infection stage on a CSV document.
 
-In this case, the image is a result of tiles (4x4) done on the Nikon microscope. Some of these images are slightly out of focus, and we do NOT want to include such nuclei in the database.
+In this case, the image results from tiles (4x4) done on a Nikon microscope. Some of these images are slightly out of focus, and we do NOT want to include such nuclei in the database.
+
+> [!NOTE]
+> This exercise focuses on Table management in ImageJ!
+
+> [!NOTE]
+> You can find the full macro: Database_infected_nuclei.ijm
+
+We start by defining some variables, the first being the save directory, called database here. The second parameter is the minimum nuclei size that we want to take into account, the minimum average intensity of infection, the resulting image size and two parameters about the nuclei shape, the solidity, and the roundness.
+
+``` Java
+save_path = File.directory + File.separator + "database";
+if (!File.isDirectory(save_path)){File.makeDirectory(save_path);}
+min_nuclei_size = 750;
+infection_int = 100;
+img_size = 100;
+min_solidity = 0.8;
+min_roundess = 0.7;
+```
+
+Then we want a simple image treatment and segmentation on the nuclei side. In this case, we want to take as much of the nuclei as possible, so we will use a `Triangle` threshold and a simple `Open` to clean isolated pixels.
+``` Java
+//first adjust the brightness/contrast
+selectWindow("C2-Composite-4hpi.tif");
+run("Enhance Contrast", "saturated=0.35");
+selectWindow("C3-Composite-4hpi.tif");
+run("Enhance Contrast", "saturated=0.35");
+//dupli as security
+run("Duplicate...", "title=nuclei");
+//Threhsolding
+setAutoThreshold("Triangle dark");
+setOption("BlackBackground", true);
+run("Convert to Mask");
+run("Open"); //clean
+```
+
+We follow up by setting up the measurement that we want to do on the nuclei. Two parameters are important here, the bounding box as `bounding` and the shape descriptor, as `shape`. The `Analyze particles` is then run, with the minimum size set here as well as excluding the edges, since we want full nuclei.
+This generates a `Results` table. However, if we leave it like that, other results will be appended to this table. To avoid this, we just need to rename it as `Results-nuclei`. Then we can set the measurement that we want to do on the infection channel, which is about intensity, then run the `multi-measure` from the `RoiManager`. In a similar fashion, we rename the Table as `Result-infection`.
+
+``` Java
+//set and measure
+run("Set Measurements...", "area centroid perimeter bounding shape redirect=None decimal=3");
+run("Analyze Particles...", "size="+min_nuclei_size+"-Infinity display exclude clear add");
+
+//Result manipulation
+selectWindow("Results");
+Table.rename("Results", "Results-nuclei");
+
+// measure the signal in the infection channel
+run("Set Measurements...", "mean standard modal min redirect=None decimal=3");
+selectWindow("C2-Composite-4hpi.tif");
+roiManager("multi-measure measure_all");
+Table.rename("Results", "Results-infection");
+```
+
+For this exercise, we will use a `while` loop, even if a `for` loop will have been more adapted (this `while` loop assumes we have at least one nuclei in the image). The first line sets the length of the Table, and the second a counter. The loop will continue to run until the condition is `False`. Then we select the correct table, grab the value of roundness and solidity at the correct row, and check if they are bigger than the one we setup earlier. If this is the case, we then check the average intensity of infection of this nuclei. If this cell is infected, we proceed on the image manipulation to extract only the nuclei of interest. We finish this code by incrementing the row to look at the next row when the loop restart.
 
 
-Quick showcase here
+``` Java
+//Set up the analysis loop
+nRows = Table.size;
+row = 0;
+while (row < nRows){
+	//Can check some parameters here to select only some nuclei
+	selectWindow("Results-nuclei");
+	Round = Table.get("Round", row);
+	Solidity = Table.get("Solidity", row);
+	//verify if the nuclei correspond to the desired parameters
+	if ((Round > min_roundess) && (Solidity > min_solidity)){
+		selectWindow("Results-infection");
+		infection = Table.get("Mean", row);
+		//check if the nuclei is infected
+		if (infection > infection_int){
+			...
+			}
+		}
+	row ++;// increment for the next row
+	}
+```
+
+Grab the bounding box, make a rectangle selection using the values, and duplicate the image. Then we resize it, adjust the contrast, and set up the image depth to 8 bits before saving it in the database folder. The image saved contains a generic name `nuclei` followed by its row number and the infection value.
+
+``` Java
+selectWindow("Results-nuclei");
+//grab the nuclei coordinates
+bx = Table.get("BX", row);
+by = Table.get("BY", row);
+w = Table.get("Width", row);
+h = Table.get("Height", row);
+// and make a duplicate of the selection
+selectWindow("C3-Composite-4hpi.tif");
+makeRectangle(bx, by, w, h);
+run("Duplicate...", "title=nuclei_"+row+"_"+round(infection));
+//resize to have the same kind of image
+run("Size...", "width="+img_size+" height="+img_size+" depth=1 average interpolation=Bilinear");
+//adjust to 8 bits
+run("Enhance Contrast", "saturated=0.35");
+run("8-bit");
+//save and close the duplicate
+name = getTitle();
+saveAs("Tiff", save_path+File.separator+name);
+close();
+print(infection);
+```
+
+You can try different values for the initial variables. This kind of database can then be used to train an algorithm like machine learning to indicate if a cell is infected (easy) or what is the cell infection level (harder) based on the nuclei label.
+
+![example image for exercise 2](https://github.com/leclercsimon74/ImageJ-Macro-Workshop-Level-2/blob/main/img/tutorial_img/Exercice2%20overview.png)
+
 
 ## Make your analysis!
+
+We can discuss what sort of exercise and analysis you want to do here!
